@@ -98,6 +98,8 @@ DEEPSEEK_LOGIN_URL = f"https://{DEEPSEEK_HOST}/api/v0/users/login"
 DEEPSEEK_CREATE_SESSION_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat_session/create"
 DEEPSEEK_CREATE_POW_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat/create_pow_challenge"
 DEEPSEEK_COMPLETION_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat/completion"
+DEEPSEEK_STOP_STREAM_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat/stop_stream"
+DEEPSEEK_DELETE_SESSION_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat_session/delete"
 BASE_HEADERS = {
     "Host": "chat.deepseek.com",
     "User-Agent": "DeepSeek/1.0.13 Android/35",
@@ -803,8 +805,6 @@ def messages_prepare(messages: list) -> str:
         else:
             parts.append(text)
     final_prompt = "".join(parts)
-    # 仅移除 markdown 图片格式(不全部移除 !）
-    final_prompt = re.sub(r"!\[(.*?)\]\((.*?)\)", r"[\1](\2)", final_prompt)
     return final_prompt
 
 
@@ -1009,6 +1009,8 @@ After calling tools, you will receive the results and can continue the conversat
                 )
 
             def sse_stream():
+                client_disconnected = False
+                stream_completed = False  # 标记流是否正常完成
                 try:
                     final_text = ""
                     final_thinking = ""
@@ -1016,6 +1018,27 @@ After calling tools, you will receive the results and can continue the conversat
                     result_queue = queue.Queue()
                     last_send_time = time.time()
                     citation_map = {}  # 用于存储引用链接的字典
+
+                    def delete_deepseek_session():
+                        """响应结束后删除 DeepSeek 会话"""
+                        try:
+                            headers = get_auth_headers(request)
+                            payload = {
+                                "chat_session_id": session_id
+                            }
+                            resp = requests.post(
+                                DEEPSEEK_DELETE_SESSION_URL,
+                                headers=headers,
+                                json=payload,
+                                impersonate="safari15_3",
+                                timeout=3
+                            )
+                            if resp.status_code == 200:
+                                logger.info(f"[sse_stream] 响应结束，已删除会话 session={session_id}")
+                            else:
+                                logger.warning(f"[sse_stream] 删除会话失败: {resp.status_code}")
+                        except Exception as e:
+                            logger.warning(f"[sse_stream] 调用 delete_session 失败: {e}")
 
                     def process_data():
                         ptype = "text"
@@ -1045,6 +1068,9 @@ After calling tools, you will receive the results and can continue the conversat
                                         break
                                     try:
                                         chunk = json.loads(data_str)
+                                        
+                                        if "response_message_id" in chunk:
+                                            response_message_id = chunk["response_message_id"]
                                         
                                         if "v" in chunk:
                                             v_value = chunk["v"]
@@ -1130,15 +1156,19 @@ After calling tools, you will receive the results and can continue the conversat
                     process_thread = threading.Thread(target=process_data)
                     process_thread.start()
 
-                    while True:
-                        current_time = time.time()
-                        if current_time - last_send_time >= KEEP_ALIVE_TIMEOUT:
+                    try:
+                        while True:
+                            current_time = time.time()
+                            if current_time - last_send_time >= KEEP_ALIVE_TIMEOUT:
 
-                            yield ": keep-alive\n\n"
-                            last_send_time = current_time
-                            continue
-                        try:
-                            chunk = result_queue.get(timeout=0.05)
+                                yield ": keep-alive\n\n"
+                                last_send_time = current_time
+                                continue
+                            try:
+                                chunk = result_queue.get(timeout=0.05)
+                            except queue.Empty:
+                                continue
+                            
                             if chunk is None:
                                 # 检测 tool_calls（如果启用了 tools）
                                 tool_calls_detected = None
@@ -1199,6 +1229,7 @@ After calling tools, you will receive the results and can continue the conversat
                                 }
                                 yield f"data: {json.dumps(finish_chunk, ensure_ascii=False)}\n\n"
                                 yield "data: [DONE]\n\n"
+                                stream_completed = True  # 标记流正常完成
                                 last_send_time = current_time
                                 break
                             new_choices = []
@@ -1245,11 +1276,18 @@ After calling tools, you will receive the results and can continue the conversat
                                 }
                                 yield f"data: {json.dumps(out_chunk, ensure_ascii=False)}\n\n"
                                 last_send_time = current_time
-                        except queue.Empty:
-                            continue
+                    except GeneratorExit:
+                        # 客户端主动断开连接（正常情况）
+                        logger.info(f"[sse_stream] 客户端断开连接 session={session_id}")
+                        client_disconnected = True
+                        raise  # 重新抛出以正常结束生成器
                 except Exception as e:
                     logger.error(f"[sse_stream] 异常: {e}")
-                finally:
+                    client_disconnected = True
+                finally:                    
+                    # 响应结束后删除会话
+                    delete_deepseek_session()
+                    
                     if getattr(request.state, "use_config_token", False) and hasattr(
                         request.state, "account"
                     ):
@@ -1268,6 +1306,27 @@ After calling tools, you will receive the results and can continue the conversat
             citation_map = {}
 
             data_queue = queue.Queue()
+
+            def delete_deepseek_session():
+                """响应结束后删除 DeepSeek 会话"""
+                try:
+                    headers = get_auth_headers(request)
+                    payload = {
+                        "chat_session_id": session_id
+                    }
+                    resp = requests.post(
+                        DEEPSEEK_DELETE_SESSION_URL,
+                        headers=headers,
+                        json=payload,
+                        impersonate="safari15_3",
+                        timeout=3
+                    )
+                    if resp.status_code == 200:
+                        logger.info(f"[chat_completions] 响应结束，已删除会话 session={session_id}")
+                    else:
+                        logger.warning(f"[chat_completions] 删除会话失败: {resp.status_code}")
+                except Exception as e:
+                    logger.warning(f"[chat_completions] 调用 delete_session 失败: {e}")
 
             def collect_data():
                 nonlocal result
@@ -1447,16 +1506,20 @@ After calling tools, you will receive the results and can continue the conversat
 
             def generate():
                 last_send_time = time.time()
-                while True:
-                    current_time = time.time()
-                    if current_time - last_send_time >= KEEP_ALIVE_TIMEOUT:
+                try:
+                    while True:
+                        current_time = time.time()
+                        if current_time - last_send_time >= KEEP_ALIVE_TIMEOUT:
 
-                        yield ""
-                        last_send_time = current_time
-                    if not collect_thread.is_alive() and result is not None:
-                        yield json.dumps(result)
-                        break
-                    time.sleep(0.1)
+                            yield ""
+                            last_send_time = current_time
+                        if not collect_thread.is_alive() and result is not None:
+                            yield json.dumps(result)
+                            break
+                        time.sleep(0.1)
+                finally:
+                    # 响应结束后删除会话
+                    delete_deepseek_session()
 
             return StreamingResponse(generate(), media_type="application/json")
     except HTTPException as exc:
@@ -2098,7 +2161,125 @@ async def claude_count_tokens(request: Request):
 
 
 # ----------------------------------------------------------------------
-# (11) 路由：/
+# (11) 路由：停止流式响应
+# ----------------------------------------------------------------------
+@app.post("/v1/chat/stop_stream")
+async def stop_stream(request: Request):
+    """
+    停止正在进行的流式对话
+    请求体示例:
+    {
+        "chat_session_id": "85437c2a-acf8-436a-a2ba-a4a110907fe7",
+        "message_id": 2
+    }
+    """
+    try:
+        # 认证
+        determine_mode_and_token(request)
+        
+        # 解析请求体
+        body = await request.json()
+        chat_session_id = body.get("chat_session_id")
+        message_id = body.get("message_id")
+        
+        if not chat_session_id:
+            raise HTTPException(status_code=400, detail="缺少 chat_session_id 参数")
+        
+        # 构造请求头
+        headers = get_auth_headers(request)
+        
+        # 构造请求体
+        payload = {
+            "chat_session_id": chat_session_id,
+            "message_id": message_id
+        }
+        
+        # 发送停止请求
+        resp = requests.post(
+            DEEPSEEK_STOP_STREAM_URL,
+            headers=headers,
+            json=payload,
+            impersonate="safari15_3"
+        )
+        
+        if resp.status_code == 200:
+            logger.info(f"[stop_stream] 成功停止会话 {chat_session_id}")
+            return JSONResponse(content={"success": True, "message": "已停止流式响应"})
+        else:
+            logger.warning(f"[stop_stream] 停止失败，状态码: {resp.status_code}")
+            return JSONResponse(
+                status_code=resp.status_code,
+                content={"success": False, "message": f"停止失败: {resp.text}"}
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[stop_stream] 异常: {e}")
+        raise HTTPException(status_code=500, detail=f"停止流式响应失败: {str(e)}")
+
+
+# ----------------------------------------------------------------------
+# (12) 路由：Claude 格式停止流式响应
+# ----------------------------------------------------------------------
+@app.post("/anthropic/v1/messages/stop_stream")
+async def claude_stop_stream(request: Request):
+    """
+    Claude 格式的停止流式对话接口
+    请求体示例:
+    {
+        "chat_session_id": "85437c2a-acf8-436a-a2ba-a4a110907fe7",
+        "message_id": 2
+    }
+    """
+    try:
+        # 使用 Claude 认证逻辑
+        determine_claude_mode_and_token(request)
+        
+        # 解析请求体
+        body = await request.json()
+        chat_session_id = body.get("chat_session_id")
+        message_id = body.get("message_id")
+        
+        if not chat_session_id:
+            raise HTTPException(status_code=400, detail="缺少 chat_session_id 参数")
+        
+        # 构造请求头
+        headers = get_auth_headers(request)
+        
+        # 构造请求体
+        payload = {
+            "chat_session_id": chat_session_id,
+            "message_id": message_id
+        }
+        
+        # 发送停止请求
+        resp = requests.post(
+            DEEPSEEK_STOP_STREAM_URL,
+            headers=headers,
+            json=payload,
+            impersonate="safari15_3"
+        )
+        
+        if resp.status_code == 200:
+            logger.info(f"[claude_stop_stream] 成功停止会话 {chat_session_id}")
+            return JSONResponse(content={"success": True, "message": "已停止流式响应"})
+        else:
+            logger.warning(f"[claude_stop_stream] 停止失败，状态码: {resp.status_code}")
+            return JSONResponse(
+                status_code=resp.status_code,
+                content={"success": False, "message": f"停止失败: {resp.text}"}
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[claude_stop_stream] 异常: {e}")
+        raise HTTPException(status_code=500, detail=f"停止流式响应失败: {str(e)}")
+
+
+# ----------------------------------------------------------------------
+# (13) 路由：/
 # ----------------------------------------------------------------------
 @app.get("/")
 def index(request: Request):

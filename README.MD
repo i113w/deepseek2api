@@ -4,7 +4,7 @@
 ![](https://img.shields.io/github/stars/iidamie/deepseek2api.svg)
 ![](https://img.shields.io/github/forks/iidamie/deepseek2api.svg)
 
-支持高速流式输出、支持多轮对话、支持R1深度思考，多路账号支持。
+支持高速流式输出、支持多轮对话、支持R1深度思考，多路账号支持，支持对话结束后自动删除 DeepSeek 会话，支持 工具函数调用。
 
 与ChatGPT接口完全兼容。
 
