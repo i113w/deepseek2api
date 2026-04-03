@@ -401,7 +401,7 @@ async def call_claude_via_openai(request: Request, claude_payload):
             search_enabled = False
         
         # 使用 messages_prepare 函数构造最终 prompt
-        final_prompt = messages_prepare(messages)
+        final_prompt = messages_prepare(messages, model)
         
         headers = {**get_auth_headers(request), "x-ds-pow-response": pow_resp}
         payload = {
@@ -762,13 +762,19 @@ def list_claude_models():
 # ----------------------------------------------------------------------
 # 消息预处理函数，将多轮对话合并成最终 prompt
 # ----------------------------------------------------------------------
-def messages_prepare(messages: list) -> str:
+def messages_prepare(messages: list, model: str = "deepseek-chat") -> str:
     """处理消息列表，合并连续相同角色的消息，并添加角色标签：
     - 对于 assistant 消息，加上 <｜Assistant｜> 前缀及 <｜end▁of▁sentence｜> 结束标签；
     - 对于 user/system 消息（除第一条外）加上 <｜User｜> 前缀；
     - 如果消息 content 为数组，则提取其中 type 为 "text" 的部分；
     - 最后移除 markdown 图片格式的内容。
+    - system 消息将转换为 user 消息，内容包裹在 <system_instructions> 标签中。
+    - 当 model 为 reasoner 系列时，assistant 历史消息将注入 <｜end▁of▁thinking｜> Token。
     """
+    is_reasoner = model.lower() in [
+        "deepseek-reasoner", "deepseek-r1",
+        "deepseek-reasoner-search", "deepseek-r1-search",
+    ]
     processed = []
     for m in messages:
         role = m.get("role", "")
@@ -780,6 +786,9 @@ def messages_prepare(messages: list) -> str:
             text = "\n".join(texts)
         else:
             text = str(content)
+        if role == "system":
+            processed.append({"role": "user", "text": f"<system_instructions>{text}</system_instructions>"})
+            continue
         processed.append({"role": role, "text": text})
     if not processed:
         return ""
@@ -796,7 +805,10 @@ def messages_prepare(messages: list) -> str:
         role = block["role"]
         text = block["text"]
         if role == "assistant":
-            parts.append(f"<｜Assistant｜>{text}<｜end▁of▁sentence｜>")
+            if is_reasoner:
+                parts.append(f"<｜Assistant｜><｜end▁of▁thinking｜>{text}<｜end▁of▁sentence｜>")
+            else:
+                parts.append(f"<｜Assistant｜>{text}<｜end▁of▁sentence｜>")
         elif role in ("user", "system"):
             if idx > 0:
                 parts.append(f"<｜User｜>{text}")
@@ -974,7 +986,7 @@ After calling tools, you will receive the results and can continue the conversat
                 messages.insert(0, {"role": "system", "content": tool_system_prompt})
         
         # 使用 messages_prepare 函数构造最终 prompt
-        final_prompt = messages_prepare(messages)
+        final_prompt = messages_prepare(messages, model)
         session_id = create_session(request)
         if not session_id:
             raise HTTPException(status_code=401, detail="invalid token.")
