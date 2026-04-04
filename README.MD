@@ -17,7 +17,7 @@
 | 改动项 | 说明 | 适用场景 |
 |--------|------|----------|
 | `system` 消息转换 | 将 `system` 角色消息转换为 `user` 角色，并包裹于 `<system_instructions>` 标签中 | 确保系统指令在多轮对话中稳定传递，避免因角色切换导致指令丢失 |
-| Reasoner 模型专属 Token | 当 `model` 参数为 `deepseek-reasoner` / `deepseek-r1` 系列时，在历史 `assistant` 消息中自动注入 `<｜end▁of▁thinking｜>` Token | 告知后端历史轮次的推理过程已结束，避免长上下文截断时状态不一致 |
+| Reasoner 模型专属 Token | 当 `model` 参数为 `deepseek-reasoner` / `deepseek-r1` 系列时，在历史 `assistant` 消息中自动注入 `<｜end▁of▁thinking｜>` Token | 告知后端历史轮次的推理过程已结束 |
 
 #### 技术原理简述
 
@@ -71,7 +71,7 @@ curl -X POST http://localhost:5001/v1/chat/completions \
 
 ## 🔗 灵感来源
 
-本功能的实现灵感来源于 **SoliUmbra** 开发的 [`ShallowSeek`](https://github.com/SoliUmbra/ShallowSeek) JavaScript 脚本，感谢其在 DeepSeek 协议逆向与消息构造方面的开创性工作。
+本功能的实现灵感来源于 **SoliUmbra** 开发的 `ShallowSeek` JavaScript 脚本，感谢其在 DeepSeek 协议逆向与消息构造方面的开创性工作。
 
 > 本 Fork 仅参考其核心思想，代码实现完全独立，未直接复用任何源代码。
 
