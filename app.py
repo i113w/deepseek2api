@@ -102,12 +102,12 @@ DEEPSEEK_STOP_STREAM_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat/stop_stream"
 DEEPSEEK_DELETE_SESSION_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat_session/delete"
 BASE_HEADERS = {
     "Host": "chat.deepseek.com",
-    "User-Agent": "DeepSeek/1.0.13 Android/35",
+    "User-Agent": "DeepSeek/1.8.0 Android/190",
     "Accept": "application/json",
     "Accept-Encoding": "gzip",
     "Content-Type": "application/json",
     "x-client-platform": "android",
-    "x-client-version": "1.3.0-auto-resume",
+    "x-client-version": "1.8.0-auto-resume",
     "x-client-locale": "zh_CN",
     "accept-charset": "UTF-8",
 }
@@ -367,7 +367,7 @@ async def call_claude_via_openai(request: Request, claude_payload):
     # 直接调用现有的chat_completions逻辑
     try:
         # 使用现有的逻辑创建session和pow
-        session_id = create_session(request)
+        session_id = create_session(request, model_type=model_type)
         if not session_id:
             raise HTTPException(status_code=401, detail="invalid token.")
         
@@ -385,18 +385,39 @@ async def call_claude_via_openai(request: Request, claude_payload):
         # 判断模型特性
         model_lower = model.lower()
         if model_lower in ["deepseek-v3", "deepseek-chat"]:
+            model_type = "default"
             thinking_enabled = False
             search_enabled = False
         elif model_lower in ["deepseek-r1", "deepseek-reasoner"]:
+            model_type = "default"
             thinking_enabled = True
             search_enabled = False
         elif model_lower in ["deepseek-v3-search", "deepseek-chat-search"]:
+            model_type = "default"
             thinking_enabled = False
             search_enabled = True
         elif model_lower in ["deepseek-r1-search", "deepseek-reasoner-search"]:
+            model_type = "default"
+            thinking_enabled = True
+            search_enabled = True
+        elif model_lower == "deepseek-expert-chat":
+            model_type = "expert"
+            thinking_enabled = False
+            search_enabled = False
+        elif model_lower == "deepseek-expert-reasoner":
+            model_type = "expert"
+            thinking_enabled = True
+            search_enabled = False
+        elif model_lower == "deepseek-expert-chat-search":
+            model_type = "expert"
+            thinking_enabled = False
+            search_enabled = True
+        elif model_lower == "deepseek-expert-reasoner-search":
+            model_type = "expert"
             thinking_enabled = True
             search_enabled = True
         else:
+            model_type = "default"
             thinking_enabled = False
             search_enabled = False
         
@@ -409,6 +430,8 @@ async def call_claude_via_openai(request: Request, claude_payload):
             "parent_message_id": None,
             "prompt": final_prompt,
             "ref_file_ids": [],
+            "model_type": model_type,
+            "preempt": False,
             "thinking_enabled": thinking_enabled,
             "search_enabled": search_enabled,
         }
@@ -451,13 +474,13 @@ def call_completion_endpoint(payload, headers, max_attempts=3):
 # ----------------------------------------------------------------------
 # (7) 创建会话 & 获取 PoW（重试时，配置模式下错误会切换账号；用户自带 token 模式下仅重试）
 # ----------------------------------------------------------------------
-def create_session(request: Request, max_attempts=3):
+def create_session(request: Request, model_type: str = "default", max_attempts=3):
     attempts = 0
     while attempts < max_attempts:
         headers = get_auth_headers(request)
         try:
             resp = requests.post(
-                DEEPSEEK_CREATE_SESSION_URL, headers=headers, json={"agent": "chat"}, impersonate="safari15_3"
+                DEEPSEEK_CREATE_SESSION_URL, headers=headers, json={"agent": "chat", "model_type": model_type}, impersonate="safari15_3"
             )
         except Exception as e:
             logger.error(f"[create_session] 请求异常: {e}")
@@ -471,7 +494,7 @@ def create_session(request: Request, max_attempts=3):
             logger.error(f"[create_session] JSON解析异常: {e}")
             data = {}
         if resp.status_code == 200 and data.get("code") == 0:
-            session_id = data["data"]["biz_data"]["id"]
+            session_id = data["data"]["biz_data"]["chat_session"]["id"]
 
             resp.close()
             return session_id
@@ -725,6 +748,34 @@ def list_models():
             "owned_by": "deepseek",
             "permission": [],
         },
+        {
+            "id": "deepseek-expert-chat",
+            "object": "model",
+            "created": 1677610602,
+            "owned_by": "deepseek",
+            "permission": [],
+        },
+        {
+            "id": "deepseek-expert-reasoner",
+            "object": "model",
+            "created": 1677610602,
+            "owned_by": "deepseek",
+            "permission": [],
+        },
+        {
+            "id": "deepseek-expert-chat-search",
+            "object": "model",
+            "created": 1677610602,
+            "owned_by": "deepseek",
+            "permission": [],
+        },
+        {
+            "id": "deepseek-expert-reasoner-search",
+            "object": "model",
+            "created": 1677610602,
+            "owned_by": "deepseek",
+            "permission": [],
+        },
     ]
     data = {"object": "list", "data": models_list}
     return JSONResponse(content=data, status_code=200)
@@ -774,6 +825,8 @@ def messages_prepare(messages: list, model: str = "deepseek-chat") -> str:
     is_reasoner = model.lower() in [
         "deepseek-reasoner", "deepseek-r1",
         "deepseek-reasoner-search", "deepseek-r1-search",
+        "deepseek-expert-reasoner",
+        "deepseek-expert-reasoner-search",
     ]
     processed = []
     for m in messages:
@@ -917,15 +970,35 @@ async def chat_completions(request: Request):
         # 判断是否启用"思考"或"搜索"功能（这里根据模型名称判断）
         model_lower = model.lower()
         if model_lower in ["deepseek-v3", "deepseek-chat"]:
+            model_type = "default"
             thinking_enabled = False
             search_enabled = False
         elif model_lower in ["deepseek-r1", "deepseek-reasoner"]:
+            model_type = "default"
             thinking_enabled = True
             search_enabled = False
         elif model_lower in ["deepseek-v3-search", "deepseek-chat-search"]:
+            model_type = "default"
             thinking_enabled = False
             search_enabled = True
         elif model_lower in ["deepseek-r1-search", "deepseek-reasoner-search"]:
+            model_type = "default"
+            thinking_enabled = True
+            search_enabled = True
+        elif model_lower == "deepseek-expert-chat":
+            model_type = "expert"
+            thinking_enabled = False
+            search_enabled = False
+        elif model_lower == "deepseek-expert-reasoner":
+            model_type = "expert"
+            thinking_enabled = True
+            search_enabled = False
+        elif model_lower == "deepseek-expert-chat-search":
+            model_type = "expert"
+            thinking_enabled = False
+            search_enabled = True
+        elif model_lower == "deepseek-expert-reasoner-search":
+            model_type = "expert"
             thinking_enabled = True
             search_enabled = True
         else:
@@ -987,7 +1060,7 @@ After calling tools, you will receive the results and can continue the conversat
         
         # 使用 messages_prepare 函数构造最终 prompt
         final_prompt = messages_prepare(messages, model)
-        session_id = create_session(request)
+        session_id = create_session(request, model_type=model_type)
         if not session_id:
             raise HTTPException(status_code=401, detail="invalid token.")
         pow_resp = get_pow_response(request)
@@ -1002,6 +1075,8 @@ After calling tools, you will receive the results and can continue the conversat
             "parent_message_id": None,
             "prompt": final_prompt,
             "ref_file_ids": [],
+            "model_type": model_type,
+            "preempt": False,
             "thinking_enabled": thinking_enabled,
             "search_enabled": search_enabled,
         }
