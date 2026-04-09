@@ -102,12 +102,12 @@ DEEPSEEK_STOP_STREAM_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat/stop_stream"
 DEEPSEEK_DELETE_SESSION_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat_session/delete"
 BASE_HEADERS = {
     "Host": "chat.deepseek.com",
-    "User-Agent": "DeepSeek/1.8.0 Android/190",
+    "User-Agent": "DeepSeek/1.8.0 Android/35",
     "Accept": "application/json",
     "Accept-Encoding": "gzip",
     "Content-Type": "application/json",
     "x-client-platform": "android",
-    "x-client-version": "1.8.0-auto-resume",
+    "x-client-version": "1.8.0",
     "x-client-locale": "zh_CN",
     "accept-charset": "UTF-8",
 }
